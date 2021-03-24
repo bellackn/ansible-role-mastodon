@@ -1,0 +1,27 @@
+galaxy_info:
+  author: Nico Bellack
+  description: Set up a Mastodon instance
+
+  license: MIT
+
+  min_ansible_version: 2.10.6
+
+  platforms:
+  - name: Ubuntu
+    versions:
+      - focal
+
+  galaxy_tags:
+    - mastodon
+
+dependencies:
+
+  - role: geerlingguy.pip
+    version: 2.0.0
+    vars:
+      pip_install_packages:
+        - docker
+        - docker-compose
+
+  - role: geerlingguy.docker
+    version: 3.0.0

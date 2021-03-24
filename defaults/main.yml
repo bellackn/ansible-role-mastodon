@@ -1,0 +1,7 @@
+---
+mastodon_version: v3.3.0
+mastodon_whitelist_mode: no
+mastodon_install_dir: /opt/mastodon
+mastodon_nginx: no
+mastodon_migrate_database: yes
+mastodon_precompile_assets: yes

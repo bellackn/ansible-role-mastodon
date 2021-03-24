@@ -1,0 +1,129 @@
+---
+- name: Create directory for Mastodon
+  file:
+    path: "{{ mastodon_install_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create directory for nginx
+  file:
+    path: "{{ mastodon_install_dir }}/nginx/conf.d"
+    state: directory
+    mode: "0755"
+  when: mastodon_nginx
+
+- name: Create directories for Mastodon uploads
+  file:
+    path: "{{ mastodon_install_dir }}/public/system/{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: "991"
+    group: "991"
+  loop:
+    - accounts
+    - media_attachments
+    - site_uploads
+
+- name: Pull Mastodon Docker image
+  community.docker.docker_image:
+    name: tootsuite/mastodon
+    tag: "{{ mastodon_version }}"
+    source: pull
+
+- name: "Register content of {{ mastodon_install_dir }}"
+  shell: "ls -a"
+  args:
+    chdir: "{{ mastodon_install_dir }}"
+  register: _install_dir_content
+  changed_when: no
+
+- name: Collect secrets for configuration generation
+  block:
+
+    - name: Generate SECRET_KEY_BASE
+      command: "docker run --rm tootsuite/mastodon:{{ mastodon_version }} bundle exec rake secret"
+      args:
+        chdir: "{{ mastodon_install_dir }}"
+      register: _mastodon_secret_key_base
+
+    - name: Generate OTP_SECRET
+      command: "docker run --rm tootsuite/mastodon:{{ mastodon_version }} bundle exec rake secret"
+      args:
+        chdir: "{{ mastodon_install_dir }}"
+      register: _mastodon_otp_secret
+
+    - name: Generate VAPID_PRIVATE_KEY and VAPID_PUBLC_KEY
+      command: >-
+        docker run --rm
+        -e SECRET_KEY_BASE={{ _mastodon_secret_key_base.stdout }}
+        -e OTP_SECRET={{ _mastodon_otp_secret.stdout }}
+        tootsuite/mastodon:{{ mastodon_version }} bundle exec rake mastodon:webpush:generate_vapid_key
+      args:
+        chdir: "{{ mastodon_install_dir }}"
+      register: _mastodon_vapid_keypair
+
+    - name: Save secrets in files
+      copy:
+        content: "{{ item.secret }}"
+        dest: "{{ item.file }}"
+        mode: "0600"
+      loop:
+        - { secret: "{{ _mastodon_secret_key_base.stdout }}", file: "{{ mastodon_install_dir }}/.secret_key_base" }
+        - { secret: "{{ _mastodon_otp_secret.stdout }}", file: "{{ mastodon_install_dir }}/.otp_secret" }
+        - { secret: "{{ _mastodon_vapid_keypair.stdout }}", file: "{{ mastodon_install_dir }}/.vapid_keypair" }
+
+  when:
+    - "'.secret_key_base' not in _install_dir_content.stdout_lines"
+    - "'.otp_secret' not in _install_dir_content.stdout_lines"
+    - "'.vapid_keypair' not in _install_dir_content.stdout_lines"
+
+- name: Register SECRET_KEY_BASE variable
+  slurp:
+    src: "{{ mastodon_install_dir }}/.secret_key_base"
+  register: _mastodon_secret_key_base
+
+- name: Register OTP_SECRET variable
+  slurp:
+    src: "{{ mastodon_install_dir }}/.otp_secret"
+  register: _mastodon_otp_secret
+
+- name: Register VAPID keypair
+  slurp:
+    src: "{{ mastodon_install_dir }}/.vapid_keypair"
+  register: _mastodon_vapid_keypair
+
+- name: Generate configuration file
+  delegate_to: "{{ inventory_hostname }}"
+  template:
+    src: .env.production.j2
+    dest: "{{ mastodon_install_dir }}/.env.production"
+    mode: "0600"
+
+- name: Generate docker-compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ mastodon_install_dir }}/docker-compose.yml"
+    mode: "0600"
+
+- name: Migrate database
+  command: docker-compose run --rm web rails db:migrate
+  args:
+    chdir: "{{ mastodon_install_dir }}"
+  when: mastodon_migrate_database
+
+- name: Precompile assets
+  command: docker-compose run --rm web rails assets:precompile
+  args:
+    chdir: "{{ mastodon_install_dir }}"
+  when: mastodon_precompile_assets
+
+- name: Generate nginx config
+  template:
+    src: nginx.conf.j2
+    dest: "{{ mastodon_install_dir }}/nginx/conf.d/default.conf"
+  when: mastodon_nginx
+
+- name: Start all services
+  community.docker.docker_compose:
+    project_src: "{{ mastodon_install_dir }}"
+    state: present
